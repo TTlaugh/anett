@@ -1,0 +1,1 @@
+zone "anett.home" { type master;file "/etc/bind/zones/forward.anetlab.home";allow-transfer { 192.168.1.3; }; };

@@ -1,0 +1,20 @@
+services:
+  bind9:
+    container_name: tmp_name
+    image: ubuntu/bind9:latest
+    networks:
+      anett:
+        ipv4_address: tmp_ip
+    environment:
+      - BIND9_USER=root
+      - TZ=Asia/Ho_Chi_Minh
+    ports:
+      - "tmp_port:53/tcp"
+      - "tmp_port:53/udp"
+    volumes:
+      - tmp_src:/etc/bind
+    restart: unless-stopped
+
+networks:
+  anett:
+    external: true

@@ -1,0 +1,432 @@
+#!/bin/bash
+# shellcheck disable=SC2046,SC2086
+
+module_name="dns_server"
+DOCKSRC="${DOCKDIR}/$module_name"
+DNSSHARE="${SHARE}/$module_name"
+if [ ! -d "$DOCKSRC" ]; then mkdir -p "$DOCKSRC"; fi
+sig_handle() {
+    rm -rf "$DOCKSRC"
+    cp -r /tmp/"$module_name.$$" "$DOCKSRC"
+    rm -rf /tmp/"$module_name.$$"
+    exit 1
+}
+if [ $SAFEMODE -eq 1 ]; then
+    cp -r "$DOCKSRC" /tmp/"$module_name.$$"
+    trap "sig_handle" INT
+fi
+
+backtitle="DNS server - $NAME"
+msg() { dialog --msgbox "$1" 0 0; }
+loading() { dialog --infobox "Loading..." 0 0; }
+isavailableIP() { docker run --rm --net anett --ip "$1" hello-world >/dev/null 2>&1; }
+isvalidPort() { docker run --rm -p "$1":53 hello-world >/dev/null 2>&1; }
+isvalidIP() {
+    if ! expr "$1" : '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$' >/dev/null; then
+        return 1 # false
+    fi
+    tmp_ifs="$IFS"
+    IFS='.'
+    set -- $1
+    IFS=$tmp_ifs; unset tmp_ifs
+    for quad in 1 2 3 4; do
+        if eval [ \$$quad -gt 255 ] || eval [ \$$quad -lt 0 ]; then
+            return 1 # false
+        fi
+    done
+    return 0 # true
+}
+
+get_zone_act() {
+    loading
+    zonelist="$(ls -1 "$DOCKSRC/$container_name/config/zones")"
+    zones=""
+    for zone in $zonelist; do
+        zones="${zones} $zone $zone"
+    done
+
+    if [ -z "$zones" ]; then
+        if dialog --backtitle "$backtitle" \
+            --title "No Zone found" \
+            --yes-label "Create" \
+            --yesno "You don't have any zone file.\nDo you want to create one?" 0 0
+        then
+            zone_act="create"
+        else
+            exit 0
+        fi
+    else
+        zone_name="$(dialog --stdout --backtitle "$backtitle" \
+            --title "Zone Manager" \
+            --ok-label "Select" \
+            --cancel-label "Back" \
+            --no-tags \
+            --extra-button \
+            --extra-label "Create" \
+            --menu "Here is a list of zone file\nPress Create to create a new zone" 0 0 10 \
+            $zones)"
+
+        case "$?" in
+            0) zone_act="manage" ;;
+            3) zone_act="create" ;;
+            *) zone_act="back";;
+        esac
+    fi
+}
+
+add_record() {
+    syntaxtype=( ""
+    "A    : <fqdn>   IN A             <ipv4>\n"
+    "AAAA : <fqdn>   IN AAAA          <ipv6>\n"
+    "NS   : <domain> IN NS            <fqdn>\n"
+    "MX   : <domain> IN MX <priority> <fqdn>\n"
+    "TXT  : <domain> IN TXT           <text>\n"
+    "CNAME: <alias>  IN CNAME         <fqdn>\n"
+    )
+    record="$(dialog --stdout --backtitle "$backtitle" --title "Add Record" --ok-label "Save" --inputbox "Common DNS Record Types and Their Syntax:\nNote:\n- fqdn -> Fully Qualified Domain Name\n- CNAME records cannot co-exist with any other record type\n- PTR records are rarely used and difficult to manage, so I didn't include it in this tool\n${syntaxtype[*]}" 0 0)"
+    echo "$record" >> "$fzfile"
+}
+
+delete_zone() {
+    named="$DOCKSRC/$container_name/config/named.conf.local"
+    echo "### Deleting Zone section in named.conf.local ... ###"
+    if grep -Fwq "\"$zone_name\"" "$named"; then
+        grep -vw "\"$zone_name\"" "$named" > "$named.$$"
+        mv "$named.$$" "$named"
+    fi
+    echo "### Removing Zone file ... ###"
+    rm -v "${fzfile:?}"
+    echo "### Done! ###"
+}
+
+record_management() {
+    # TODO: must use bash array, so it not posix sh
+    fzfile="$DOCKSRC/$container_name/config/zones/$zone_name"
+    while :; do
+        loading
+        contents=(
+            ORIGIN     1  1 "$zone_name" 1 12 50 0 2
+            TTL        2  1 "2d"         2 12 50 0 0
+            IP         3  1 ""           3 12 50 0 0
+            Primary_NS 4  1 "server.$zone_name" 4 12 50 0 0
+            NS_IP      5  1 ""           5 12 50 0 0
+            AdminID    6  1 "root"       6 12 50 0 0
+            Seri       7  1 "$(date +'%m%d%H%M%S')" 7 12 50 0 0
+            Refresh    8  1 "12h"        8  12 50 0 0
+            Retry      9  1 "15m"        9  12 50 0 0
+            Expire     10 1 "3w"         10 12 50 0 0
+            Min_ttl    11 1 "2h"         11 12 50 0 0
+        )
+        i=1
+        while read -r line; do
+            [ -z "$line" ] && continue
+            set -- $line
+            if [ "$1" = "\$ORIGIN" ]; then contents=( ORIGIN "$i" 1 "${2%?}" "$i" 12 50 0 2 )
+            elif [ "$1" = "\$TTL" ]; then  contents+=( TTL "$i" 1 "${2:-2d}" "$i" 12 50 0 0 )
+            elif [ "$1" = "@" ]; then
+                if [ "$3" = "A" ]; then
+                    contents+=( IP "$i" 1 "$4" "$i" 12 50 0 0 )
+                elif [ "$3" = "NS" ]; then
+                    primary_ns="$4"
+                    contents+=( Primary_NS "$i" 1 "${4%?}" "$i" 12 50 0 0 )
+                elif [ "$3" = "SOA" ]; then
+                    contents+=( AdminID "$i" 1 "${5%%.*}" "$i" 12 50 0 0 )
+                    i="$((i+1))"
+                    contents+=( Seri    "$i" 1 "${7:-$(date +'%Y%m%d%H%M%S')}" "$i" 12 50 0 0 )
+                    i="$((i+1))"
+                    contents+=( Refresh "$i" 1 "${8:-12h}" "$i" 12 50 0 0 )
+                    i="$((i+1))"
+                    contents+=( Retry   "$i" 1 "${9:-15m}" "$i" 12 50 0 0 )
+                    i="$((i+1))"
+                    contents+=( Expire  "$i" 1 "${10:-3w}" "$i" 12 50 0 0 )
+                    i="$((i+1))"
+                    contents+=( Min_ttl "$i" 1 "${11:-2h}" "$i" 12 50 0 0 )
+                fi
+            elif [ "$1" = "$primary_ns" ] && [ "$3" = "A" ]; then
+                contents+=( NS_IP "$i" 1 "$4" "$i" 12 50 0 0 )
+            else
+                contents+=( "$3" "$i" 1 "$*" "$i" 12 50 0 0 )
+            fi
+
+            i="$((i+1))"
+        done < "$fzfile"
+
+        output="$(dialog --stdout --separator "_" \
+        --backtitle "$backtitle" \
+        --title "Records" \
+        --ok-label "Save" \
+        --cancel-label "Delete Zone" \
+        --extra-button \
+        --extra-label "Add Record" \
+        --mixedform "<!> Deleting all the contents of a field will delete the Record as well" 0 0 18 \
+        "${contents[@]}")"
+        exitcode=$?
+        tmp_ifs="$IFS"
+        IFS=_
+        set -- $output
+        IFS="$tmp_ifs"; unset tmp_ifs
+        case $exitcode in
+            0)
+                if ! isvalidIP "$3" || ! isvalidIP "$5"; then
+                    msg "Invalid IP address!"
+                    continue
+                fi
+                break
+            ;;
+            1)
+                if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete this zone?" 0 0; then
+                    delete_zone | dialog --title "Deleting Zone" --programbox -1 -1 && return
+                fi
+            ;;
+            3) add_record && continue;;
+            *) return ;;
+        esac
+    done
+
+    records="\$ORIGIN $1.
+\$TTL $2
+@ IN A $3
+@ IN NS $4.
+$4. IN A $5
+@ IN SOA $4. $6.$1. ( $7 $8 $9 ${10} ${11} )
+"
+    for ((i = 12;; i++)); do
+        eval line="\${$i}"
+        [ -z "$line" ] && break
+        records="$records$line
+"
+    done
+    echo "$records" > "$fzfile"
+}
+
+create_zone() {
+    zone_name="$(dialog --stdout --backtitle "$backtitle" --title "Create Zone" \
+        --inputbox "Enter zone name (domain name):" 0 0)"
+    if [ -z "$zone_name" ]; then return; fi
+    if [ -f "$DOCKSRC/$container_name/config/zones/$zone_name" ]; then
+        msg "This zone name (domain name) is already exists"
+        return
+    fi
+    type="primary"
+    transfer="none"
+    if ! dialog --backtitle "$backtitle" --title "Choose type of zone" \
+        --yes-label "primary" --no-label "secondary" \
+        --yesno "What type of this zone do you want to create?" 0 0
+    then
+        type="secondary"
+    fi
+    transfer="$(dialog --stdout --backtitle "$backtitle" --title "Allow transfer" \
+        --inputbox "Enter the servers you want to allow transfer\nEach element is end with ';' including the last one" 0 0)"
+    echo "zone \"$zone_name\"{type $type;file \"/etc/bind/zones/$zone_name\";allow-transfer{${transfer:-none};};};" >> "$DOCKSRC/$container_name/config/named.conf.local"
+
+    record_management
+}
+
+zone_management() {
+    while :; do
+        get_zone_act
+        case "$zone_act" in
+            create) create_zone ;;
+            manage) record_management ;;
+            *) return 0;;
+        esac
+    done
+}
+
+dockercompose_form() {
+    while
+        if ! output="$(dialog --stdout --separator " " \
+        --backtitle "$backtitle" \
+        --title "Create server" \
+        --ok-label "Next" \
+        --mixedform "Need these informations to create docker container" 13 45 6 \
+        ""         1 1 "(*) Name must be unique"           1 0  0  25 2 \
+        ""         2 1 "    Only '_', letters and numbers" 2 0  0  35 2 \
+        "Name:"    3 1 ""                                  3 10 20 0  0 \
+        ""         4 1 "(*) Subnet: $SUBNET"               4 0  0  20 2 \
+        "IP addr:" 5 1 ""                                  5 10 20 0  0 \
+        "Port:"    6 1 "53"                                6 10 5  0  0)"; then exit 0; fi
+        set -- $output
+        msgstr=''
+        if [ -d "$DOCKSRC/$1" ]; then
+            msgstr="$msgstr\nThis server name is already in use"
+        fi
+        if ! isavailableIP "$2"; then
+            msgstr="$msgstr\nThis IP address is invalid"
+        fi
+        if ! isvalidPort "$3"; then
+            msgstr="$msgstr\nThis port is invalid"
+        fi
+        [ -n "$msgstr" ] && msg "$msgstr"
+    do :; done
+    container_name="$1"
+    ip="$2"
+    port="$3"
+}
+
+save_config() {
+    loading
+    cfg="$DOCKSRC/$container_name/config/named.conf.options"
+    tmp="/tmp/${container_name}_named.conf.options.$$"
+    sed "s:listen-on { $listen_on_old:listen-on { $listen_on:"                             < "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+    sed "s:listen-on-v6 { $listen_on_v6_old:listen-on-v6 { $listen_on_v6:"                 < "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+    sed "s:allow-query { $allow_query_old:allow-query { $allow_query:"                     < "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+    sed "s:allow-transfer { $allow_transfer_old:allow-transfer { $allow_transfer:"         < "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+    sed "s:forwarders { $forwarders_old:forwarders { $forwarders:"                         < "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+    sed "s:recursion $recursion_old:recursion $recursion:"                                 < "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+    sed "s:dnssec-validation $dnssec_validation_old:dnssec-validation $dnssec_validation:" < "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+}
+
+edit_configuration() {
+    loading
+    set -- $(grep '^;' "$DOCKSRC/$container_name/config/named.conf.options" | awk '{print $3 " "}')
+    listen_on_old="$1"
+    listen_on_v6_old="$2"
+    allow_query_old="$3"
+    allow_transfer_old="$5"
+    forwarders_old="$5"
+    recursion_old="$6"
+    dnssec_validation_old="$7"
+    if ! output="$(dialog --stdout --separator " " \
+    --backtitle "$backtitle" \
+    --title "DNS server configuration" \
+    --ok-label "Next" \
+    --form "Each element is end with ';' including the last one\nBe careful!" 16 46 7 \
+    "listen-on"         1 1 "$1" 1 20 20 0 \
+    "listen-on-v6"      2 1 "$2" 2 20 20 0 \
+    "allow-query"       3 1 "$3" 3 20 20 0 \
+    "allow-transfer"    4 1 "$4" 4 20 20 0 \
+    "forwarders"        5 1 "$5" 5 20 20 0 \
+    "recursion"         6 1 "$6" 6 20 20 0 \
+    "dnssec-validation" 7 1 "$7" 7 20 20 0)"; then return; fi
+    set -- $output
+    listen_on="$1"
+    listen_on_v6="$2"
+    allow_query="$3"
+    allow_transfer="$5"
+    forwarders="$5"
+    recursion="$6"
+    dnssec_validation="$7"
+
+    save_config
+}
+
+create_server() {
+    dockercompose_form
+    mkdir -p "$DOCKSRC/$container_name/config/zones"
+    sed "s/tmp_name/$container_name/;s/tmp_ip/$ip/;s/tmp_port/$port/g;s:tmp_src:$DOCKSRC/$container_name/config:" < "$DNSSHARE/docker-compose.yml" > "$DOCKSRC/$container_name/docker-compose.yml"
+    cp "$DNSSHARE"/named.* "$DOCKSRC/$container_name/config/"
+    edit_configuration
+}
+
+delete_server() {
+    echo "### Stopping and removing Containers ... ###"
+    docker compose -f "$DOCKSRC/$container_name/docker-compose.yml" down
+    echo "### Removing all files ... ###"
+    rm -vrf "${DOCKSRC:?}/$container_name"
+    echo "### Done! ###"
+}
+
+power() {
+    loading
+    case "$1" in
+        on)
+            docker compose up -d >/dev/null 2>&1
+            sleep 1 & wait && docker compose stop >/dev/null 2>&1
+            if docker ps -an1 --format "{{.Status}}" | grep -q "(0)"; then
+                docker compose up -d >/dev/null 2>&1
+            else
+                docker compose down >/dev/null 2>&1
+                msg "Server startup failed, an error occurred! Please check your server configuration."
+            fi
+        ;;
+        off)
+            docker compose down >/dev/null 2>&1
+        ;;
+    esac
+}
+
+server_management() {
+    pwd=$PWD
+    cd "$DOCKSRC/$container_name" || return
+    while :; do
+        loading
+        inspect_state="$(docker inspect -f '{{.State.Running}}:{{.State.ExitCode}}' "$container_name" 2>/dev/null)"
+        status="stopped"
+        onoff="on"
+        turn_label="Turn $onoff server"
+        if [ "$inspect_state" = "true:0" ]; then
+            status="running"
+            onoff="off"
+            turn_label="Turn $onoff server"
+        fi
+        case "$(dialog --stdout --backtitle "$backtitle" --title "Server Management" --no-tags --menu "Status: $status" 0 0 4 \
+                1 "$turn_label" 2 "Zone Management" 3 "Configuration" 4 "Delete")"
+        in
+            1) power "$onoff" ;;
+            2) zone_management ;;
+            3) edit_configuration ;;
+            4)
+                if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
+                    delete_server | dialog --title "Deleting Server" --programbox -1 -1 && return
+                fi
+            ;;
+            *) break ;;
+        esac
+    done
+    cd "$pwd" || return
+}
+
+get_server_act() {
+    loading
+    all_composes="$(ls -1 "$DOCKSRC")"
+    running_cons="$(docker compose ls -q)"
+    server_state=""
+    for server in $all_composes; do
+        if [ "${running_cons#*"$server"}" != "$running_cons" ]; then
+            server_state="${server_state}$server @$server
+"
+        else
+            server_state="${server_state}$server #$server
+"
+        fi
+    done
+    if [ -z "$server_state" ]; then
+        if dialog --backtitle "$backtitle" \
+            --title "No Server found" \
+            --yes-label "Create" \
+            --yesno "You don't have any DNS servers.\nDo you want to create one?" 0 0
+        then
+            sv_act="create"
+        else
+            exit 0
+        fi
+    else
+        container_name="$(dialog --stdout --backtitle "$backtitle" \
+            --title "DNS Manager" \
+            --ok-label "Select" \
+            --cancel-label "Back" \
+            --no-tags \
+            --extra-button \
+            --extra-label "Create" \
+            --menu "Here is a list of dns server\nPress Create to create a new server\n@ - running; # - stopped" 20 50 10 \
+            $server_state)"
+
+        case "$?" in
+            0) sv_act="manage" ;;
+            3) sv_act="create" ;;
+            *) sv_act="back";;
+        esac
+    fi
+}
+
+# set -x
+while :; do
+    get_server_act
+    case $sv_act in
+        create) create_server ;;
+        manage) server_management ;;
+        *) break;;
+    esac
+done
+[ -d /tmp/"$module_name.$$" ] && rm -rf /tmp/"$module_name.$$"

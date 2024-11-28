@@ -1,0 +1,96 @@
+#!/bin/sh
+
+export SAFEMODE
+export NAME="anett"
+export DOCKDIR="${XDG_DATA_HOME:-$HOME/.local/share}/$NAME"
+export SHARE="./share"
+
+msg() { dialog --title "$2" --msgbox "$1" 0 0; }
+
+check_deps() {
+    deps="docker dialog jq"
+    for x in $deps; do
+        if ! command -V "$x" >/dev/null 2>&1; then
+            echo "'$x' is not installed on your system!"
+        fi
+    done
+    if ! command docker-compose >/dev/null 2>&1 && ! docker compose version >/dev/null 2>&1; then
+        echo "'Docker Compose' is not installed on your system!"
+    fi
+    [ $? -gt 1 ] && exit 1
+}
+
+check_docker_permission() {
+    allgroups="$(groups "$USER")"
+    if [ "${allgroups#*"docker"}" = "$allgroups" ]; then
+        echo "You ($USER) does not belong to 'docker' group"
+        exit 1
+    fi
+}
+
+create_network() { # shellcheck disable=SC2046
+    # Name: readonly, default: '$NAME'
+    # Driver: readonly, default: 'bridge'
+    # Subnet: editable
+    # Gateway: editable
+    set -- $(dialog --stdout --separator " " \
+    --backtitle "Network configuration" \
+    --title "Create the main network for $NAME" \
+    --mixedform "\nWe will use default bridge driver for '$NAME' docker network" 13 40 4 \
+    "Name:"    1 1 "$NAME"          1 10 5 0 2 \
+    "Driver:"  2 1 "bridge"         2 10 10 0 2 \
+    "Subnet:"  3 1 "192.168.1.0/24" 3 10 20 0 0 \
+    "Gateway:" 4 1 "192.168.1.1"    4 10 15 0 0)
+
+    if ! output="$(docker network create --driver="$2" --subnet="$3" --gateway="$4" "$1" 2>&1)"; then
+        msg "Detail: $output" "Network creation failed"
+        exit 1
+    fi
+}
+
+init() {
+    if [ ! -d "$DOCKDIR" ]; then
+        mkdir -p "$DOCKDIR"
+    fi
+    if [ -z "$(docker images hello-world --format "{{.Repository}}")" ]; then
+        docker pull hello-world
+    fi
+    if ! docker network inspect "$NAME" >/dev/null 2>&1; then
+        create_network
+    else
+        SUBNET="$(docker network inspect "$NAME" | jq -r '.[] | .IPAM.Config[0].Subnet' -)"
+        export SUBNET
+    fi
+}
+
+read_modules() {
+    modules="$(ls -1 ./modules)"
+    for module in $modules; do
+        services="$services$module $module
+" # I must do that :(
+    done
+}
+
+select_service() { # shellcheck disable=SC2086
+    selected="$(dialog --stdout \
+    --backtitle "Welcome to anett - My misc project XD" \
+    --title "Service selection" \
+    --ok-label "Select" \
+    --no-tags \
+    --menu "Select the service you want to deploy" 15 35 10 \
+    $services)"
+}
+
+check_deps
+check_docker_permission
+set -e
+init
+read_modules
+while :; do
+    select_service
+    SAFEMODE=0
+    if dialog --backtitle "Welcome to anett - My misc project XD" --title "SAFE mode" --yesno "Do you want to enable SAFE mode?" 0 0; then
+        SAFEMODE=1
+    fi
+    ./modules/"$selected"
+done
