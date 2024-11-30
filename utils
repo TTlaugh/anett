@@ -1,0 +1,29 @@
+#!/bin/sh
+# shellcheck disable=SC2086
+
+msg() { dialog --msgbox "$1" 0 0; }
+loading() { dialog --infobox "Loading..." 0 0; }
+isavailableIP() { docker run --rm --net anett --ip "$1" hello-world >/dev/null 2>&1; }
+isvalidPort() { docker run --rm -p "$1":53 hello-world >/dev/null 2>&1; }
+isvalidIP() {
+    if ! expr "$1" : '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$' >/dev/null; then
+        return 1 # false
+    fi
+    tmp_ifs="$IFS"
+    IFS='.'
+    set -- $1
+    IFS=$tmp_ifs; unset tmp_ifs
+    for quad in 1 2 3 4; do
+        if eval [ \$$quad -gt 255 ] || eval [ \$$quad -lt 0 ]; then
+            return 1 # false
+        fi
+    done
+    return 0 # true
+}
+
+sig_handle() {
+    rm -rf "$DOCKSRC"
+    cp -r /tmp/"$1.$$" "$DOCKSRC"
+    rm -rf /tmp/"$1.$$"
+    exit 1
+}

@@ -1,5 +1,18 @@
 #!/bin/sh
+# shellcheck disable=SC2046,SC2086
 
-DOCKSRC="${DOCKDIR}/web_server"
+# shellcheck source=../utils
+. "$UTILS"
+
+backtitle="Web server - $NAME"
+module_name="web_server"
+
+DOCKSRC="${DOCKDIR}/$module_name"
+DNSSHARE="${SHARE}/$module_name"
+if [ ! -d "$DOCKSRC" ]; then mkdir -p "$DOCKSRC"; fi
+if [ $SAFEMODE -eq 1 ]; then
+    cp -r "$DOCKSRC" /tmp/"$module_name.$$"
+    trap 'sig_handle $module_name' INT
+fi
 
 

@@ -4,6 +4,7 @@ export SAFEMODE
 export NAME="anett"
 export DOCKDIR="${XDG_DATA_HOME:-$HOME/.local/share}/$NAME"
 export SHARE="./share"
+export UTILS="./utils"
 
 msg() { dialog --title "$2" --msgbox "$1" 0 0; }
 
@@ -89,7 +90,7 @@ read_modules
 while :; do
     select_service
     SAFEMODE=0
-    if dialog --backtitle "Welcome to anett - My misc project XD" --title "SAFE mode" --yesno "Do you want to enable SAFE mode?" 0 0; then
+    if dialog --backtitle "Welcome to anett - My misc project XD" --title "SAFE mode" --defaultno --yesno "Do you want to enable SAFE mode?" 0 0; then
         SAFEMODE=1
     fi
     ./modules/"$selected"

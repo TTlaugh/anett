@@ -1,0 +1,16 @@
+services:
+  nginx:
+    container_name: tmp_name
+    build: ./nginx
+    networks:
+      anett:
+        ipv4_address: tmp_ip
+    ports:
+      - "8080:80"
+    volumes:
+      - tmp_src:/var/www/html/
+    restart: unless-stopped
+
+networks:
+  anett:
+    external: true
