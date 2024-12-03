@@ -1,7 +1,7 @@
 #!/bin/sh
 # shellcheck disable=SC2086
 
-msg() { dialog --msgbox "$1" 0 0; }
+msg() { dialog --title "$2" --msgbox "$1" 0 0; }
 loading() { dialog --infobox "Loading..." 0 0; }
 isavailableIP() { docker run --rm --net anett --ip "$1" hello-world >/dev/null 2>&1; }
 isvalidPort() { docker run --rm -p "$1":53 hello-world >/dev/null 2>&1; }

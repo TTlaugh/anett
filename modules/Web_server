@@ -6,13 +6,202 @@
 
 backtitle="Web server - $NAME"
 module_name="web_server"
+container_name="nginx_server"
 
 DOCKSRC="${DOCKDIR}/$module_name"
-DNSSHARE="${SHARE}/$module_name"
+WEBSHARE="${SHARE}/$module_name"
 if [ ! -d "$DOCKSRC" ]; then mkdir -p "$DOCKSRC"; fi
 if [ $SAFEMODE -eq 1 ]; then
     cp -r "$DOCKSRC" /tmp/"$module_name.$$"
     trap 'sig_handle $module_name' INT
 fi
 
+dockercompose_form() {
+    while
+        if ! output="$(dialog --stdout --separator " " \
+        --backtitle "$backtitle" \
+        --title "Create server" \
+        --ok-label "Next" \
+        --mixedform "Need these informations to create docker container" 15 60 6 \
+        "Name:"     1 1 "$container_name"                                       1 11 30 0  2 \
+        ""          2 1 "(*) Subnet: $SUBNET"                                   2 0  0  20 2 \
+        "IP addr:"  3 1 ""                                                      3 11 20 0  0 \
+        "Port:"     4 1 "80"                                                    4 11 5  0  0 \
+        ""          5 1 "Website(s) folder must be stored here (absolute path)" 5 0  0  55 2 \
+        "Root Dir:" 6 1 "${XDG_DATA_HOME:-$HOME/.local/share}/www"              6 11 60 0  0 )"; then exit 0; fi
+        set -- $output
+        msgstr=''
+        # if [ -d "$DOCKSRC/$1" ]; then
+        #     msgstr="$msgstr\nThis server name is already in use"
+        # fi
+        if ! isavailableIP "$2"; then
+            msgstr="$msgstr\nThis IP address is invalid"
+        fi
+        if ! isvalidPort "$3"; then
+            msgstr="$msgstr\nThis port is invalid"
+        fi
+        if [ ! -d "$4" ]; then
+            mkdir -p "$4" || msgstr="$msgstr\nCan't create Root Directory: $4"
+        fi
+        [ -n "$msgstr" ] && msg "$msgstr"
+    do :; done
+    # container_name="$1"
+    ip="$2"
+    port="$3"
+    root_dir="$4"
+}
 
+create_server() {
+    dockercompose_form
+    mkdir -p "$DOCKSRC/$container_name/conf.d"
+    touch "$defconf"
+    sed "s/tmp_name/$container_name/;s/tmp_ip/$ip/;s/tmp_port/$port/g;s:tmp_src:$root_dir:" < "$WEBSHARE/docker-compose.yml" > "$DOCKSRC/$container_name/docker-compose.yml"
+}
+
+delete_server() {
+    echo "### Stopping and removing Containers ... ###"
+    docker compose -f "$DOCKSRC/$container_name/docker-compose.yml" down
+    echo "### Removing all files ... ###"
+    rm -vrf "${DOCKSRC:?}/$container_name"
+    echo "### Done! ###"
+}
+
+power() {
+    loading
+    case "$1" in
+        on)
+            if errors="$(docker compose up -d >/dev/null)"; then
+                sleep 1 & wait && docker compose stop >/dev/null 2>&1
+                if docker ps -an1 --format "{{.Status}}" | grep -q "(0)"; then
+                    docker compose up -d >/dev/null 2>&1
+                else
+                    docker compose down >/dev/null 2>&1
+                    msg "Server startup failed, an error occurred! Please check your server configuration."
+                fi
+            else
+                msg "Detail: $errors" "Server startup failed!"
+            fi
+        ;;
+        off)
+            docker compose down >/dev/null 2>&1
+        ;;
+    esac
+}
+
+add_website() {
+    newweb="$(dialog --stdout \
+    --backtitle "$backtitle" \
+    --title "Add website" \
+    --extra-button \
+    --extra-label "Browse" \
+    --form "Your website sources must be stored in\n$root_dir/<Server name>\nEnter Server name and press Browse\nto select actual sources folder and copy it OR\nmanually add sources later." 0 0 1 \
+    "Server name:" 1 1 "example.com" 1 14 20 0)"
+    exitcode=$?
+    [ $exitcode -eq 1 ] && return
+    if [ -d "$root_dir/$newweb" ]; then
+        msg "This Name already exists."
+        return
+    else
+        mkdir -p "$root_dir/$newweb"
+    fi
+    echo "server { listen 80; listen [::]:80; server_name $newweb; root /usr/share/nginx/$newweb; index index.html index.htm; location / { try_files \$uri \$uri/ =404; } }" >> "$defconf"
+    if [ $exitcode -eq 3 ]; then
+        src="$(dialog --stdout --dselect $HOME -1 -1)"
+        if [ ! -d "$src" ]; then
+            msg "This folder does not exists."
+            return
+        fi
+        cp -r "$src"/* "$root_dir/$newweb"
+    fi
+}
+
+delete_website() {
+    echo "### Deleting $webname config in conf.d/default.conf ... ###"
+    if grep -Fwq "$webname" "$defconf"; then
+        grep -vw "$webname" "$defconf" > "$defconf.$$"
+        mv "$defconf.$$" "$defconf"
+    fi
+    echo "### Done! ###"
+    echo "The '$webname' sources are still RETAINED, you need to REMOVE them manually."
+}
+
+website_management() {
+    while :; do
+        server_names="$(grep -oP "server_name\s+\K.*?(?=;)" "$defconf")"
+        if [ -z "$server_names" ]; then
+            if dialog --backtitle "$backtitle" --title "No Website found" --yesno "You don't have any website\nDo you want to create one?" 0 0; then
+                add_website
+            fi
+        fi
+        websites=""
+        for sv_name in $server_names; do
+            websites="${websites} $sv_name $sv_name"
+        done
+        webname="$(dialog --stdout --backtitle "$backtitle" --title "Server Management" \
+        --ok-label "Back" \
+        --cancel-label "Delete" \
+        --extra-button --extra-label "Create" \
+        --no-tags --menu "Status: $status" 0 0 5 \
+        $websites)"
+        case "$?" in
+            3) add_website ;;
+            1)
+                if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
+                    msg "The '$webname' sources are still RETAINED, you need to REMOVE them manually."
+                    delete_website | dialog --title "Deleting Server" --programbox -1 -1 && return
+                fi
+            ;;
+            *) return;;
+        esac
+    done
+}
+
+change_root_dir() {
+    newdir="$(dialog --stdout --backtitle "$backtitle" --title "Change Root Dir" --inputbox "Absolute path is required!\nOld path: $root_dir" 0 0)"
+    if [ ! -d "$newdir" ]; then
+        mkdir -p "$newdir"
+    else
+        msg "This path is invalid: file or folder exists.\nAborted!"
+    fi
+}
+
+set -x
+
+defconf="$DOCKSRC/$container_name/conf.d/default.conf"
+if [ ! -f "$DOCKSRC/$container_name/docker-compose.yml" ]; then
+    if ! dialog --backtitle "$backtitle" --title "No server found!" --yesno "You don't have server\nDo you want to create?" 0 0; then
+        exit 0
+    fi
+    create_server
+fi
+pwd=$PWD
+cd "$DOCKSRC/$container_name" || return
+while :; do
+    loading
+    inspect_state="$(docker inspect -f '{{.State.Running}}:{{.State.ExitCode}}' "$container_name" 2>/dev/null)"
+    status="stopped"
+    onoff="on"
+    turn_label="Turn $onoff server"
+    if [ "$inspect_state" = "true:0" ]; then
+        status="running"
+        onoff="off"
+        turn_label="Turn $onoff server"
+    fi
+    root_dir="$(head -n1 "$DOCKSRC/$container_name/docker-compose.yml" | sed 's/#//')"
+
+    case "$(dialog --stdout --backtitle "$backtitle" --title "Server Management" --no-tags --menu "Status: $status\nRoot Directory: $root_dir" 0 0 5 \
+            1 "$turn_label" 2 "Website Management" 3 "Change Root Dir" 4 "Delete")"
+    in
+        1) power "$onoff" ;;
+        2) website_management ;;
+        3) change_root_dir ;;
+        4)
+            if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
+                delete_server | dialog --title "Deleting Server" --programbox -1 -1 && return
+            fi
+        ;;
+        *) break ;;
+    esac
+done
+cd "$pwd" || return
+if [ -d /tmp/"$module_name.$$" ]; then rm -rf /tmp/"$module_name.$$"; fi

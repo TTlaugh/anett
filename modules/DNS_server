@@ -309,13 +309,16 @@ power() {
     loading
     case "$1" in
         on)
-            docker compose up -d >/dev/null 2>&1
-            sleep 1 & wait && docker compose stop >/dev/null 2>&1
-            if docker ps -an1 --format "{{.Status}}" | grep -q "(0)"; then
-                docker compose up -d >/dev/null 2>&1
+            if errors="$(docker compose up -d >/dev/null)"; then
+                sleep 1 & wait && docker compose stop >/dev/null 2>&1
+                if docker ps -an1 --format "{{.Status}}" | grep -q "(0)"; then
+                    docker compose up -d >/dev/null 2>&1
+                else
+                    docker compose down >/dev/null 2>&1
+                    msg "Server startup failed, an error occurred! Please check your server configuration."
+                fi
             else
-                docker compose down >/dev/null 2>&1
-                msg "Server startup failed, an error occurred! Please check your server configuration."
+                msg "Detail: $errors" "Server startup failed!"
             fi
         ;;
         off)

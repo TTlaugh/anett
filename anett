@@ -1,12 +1,14 @@
 #!/bin/sh
 
+export SUBNET
 export SAFEMODE
 export NAME="anett"
 export DOCKDIR="${XDG_DATA_HOME:-$HOME/.local/share}/$NAME"
 export SHARE="./share"
 export UTILS="./utils"
 
-msg() { dialog --title "$2" --msgbox "$1" 0 0; }
+# shellcheck source=./utils
+. "$UTILS"
 
 check_deps() {
     deps="docker dialog jq"
@@ -43,6 +45,7 @@ create_network() { # shellcheck disable=SC2046
     "Subnet:"  3 1 "192.168.1.0/24" 3 10 20 0 0 \
     "Gateway:" 4 1 "192.168.1.1"    4 10 15 0 0)
 
+    loading
     if ! output="$(docker network create --driver="$2" --subnet="$3" --gateway="$4" "$1" 2>&1)"; then
         msg "Detail: $output" "Network creation failed"
         exit 1
@@ -50,18 +53,17 @@ create_network() { # shellcheck disable=SC2046
 }
 
 init() {
+    loading
     if [ ! -d "$DOCKDIR" ]; then
         mkdir -p "$DOCKDIR"
     fi
     if [ -z "$(docker images hello-world --format "{{.Repository}}")" ]; then
-        docker pull hello-world
+        docker pull -q hello-world
     fi
-    if ! docker network inspect "$NAME" >/dev/null 2>&1; then
+    if ! inspect="$(docker network inspect "$NAME")"; then
         create_network
-    else
-        SUBNET="$(docker network inspect "$NAME" | jq -r '.[] | .IPAM.Config[0].Subnet' -)"
-        export SUBNET
     fi
+    SUBNET="$(echo "$inspect" | jq -r '.[] | .IPAM.Config[0].Subnet' -)"
 }
 
 read_modules() {

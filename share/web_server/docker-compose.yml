@@ -1,15 +1,17 @@
+#tmp_src
 services:
   nginx:
     container_name: tmp_name
-    build: ./nginx
+    image: nginx:latest
+    ports:
+      - "tmp_port:80"
+    restart: unless-stopped
     networks:
       anett:
         ipv4_address: tmp_ip
-    ports:
-      - "8080:80"
     volumes:
-      - tmp_src:/var/www/html/
-    restart: unless-stopped
+      - ./conf.d:/etc/nginx/conf.d
+      - tmp_src:/usr/share/nginx
 
 networks:
   anett:
