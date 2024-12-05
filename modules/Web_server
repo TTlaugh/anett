@@ -137,14 +137,14 @@ website_management() {
             websites="${websites} $sv_name $sv_name"
         done
         webname="$(dialog --stdout --backtitle "$backtitle" --title "Server Management" \
-        --ok-label "Back" \
-        --cancel-label "Delete" \
-        --extra-button --extra-label "Create" \
+        --ok-label "Create" \
+        --cancel-label "Back" \
+        --extra-button --extra-label "Delete" \
         --no-tags --menu "Status: $status" 0 0 5 \
         $websites)"
         case "$?" in
-            3) add_website ;;
-            1)
+            0) add_website ;;
+            3)
                 if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
                     msg "The '$webname' sources are still RETAINED, you need to REMOVE them manually."
                     delete_website | dialog --title "Deleting Server" --programbox -1 -1 && return
