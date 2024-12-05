@@ -18,7 +18,7 @@ anon_container_name="anon_ftp_server"
 default_anon_root="$HOME"
 user_container_name="user_ftp_server"
 startUID=10000
-mnt_poin="/ftp/"
+mnt_poin="/ftp"
 fdeleted_uid="$DOCKSRC/$user_container_name/deleted.uid"
 fcurrent_uid="$DOCKSRC/$user_container_name/current.uid"
 tmp_ifs="$IFS"
@@ -65,7 +65,6 @@ delete_server() {
 }
 
 power() {
-    set -x
     loading
     case "$2" in
         on)
@@ -109,9 +108,9 @@ add_user() {
     --title "Add User" \
     --mixedform "Root directory must be absolute" 0 0 2 \
         "uid(UserID) username:        password:        root directory:" 1 1 "" 1 37 0 0 2 \
-        "uid($uid)" 1 1 "" 1 13 16 0 0 \
-        ""          1 1 "" 1 30 16 0 0 \
-        ""          1 1 "" 1 47 25 0 0 )"
+        "uid($uid)" 2 1 "" 2 13 16 0 0 \
+        ""          2 1 "" 2 30 16 0 0 \
+        ""          2 1 "" 2 47 50 0 0 )"
     set -- $output
     username=" $1"
     password="$2"
@@ -120,8 +119,13 @@ add_user() {
         msg "This username already exists"
         return
     fi
-    str="$username|$password|$rootdir|$uid"
-    sed "s:$users:$users$str:" < $file > "$file.$$" && mv "$file.$$" $file
+    str="$username|$password|$mnt_poin/$rootdir|$uid"
+    if [ -z "$users" ]; then
+        sed "s:      - USERS=:      - USERS=$str:" < $file > "$file.$$" && mv "$file.$$" $file
+    else
+        sed "s:$users:$users$str:" < $file > "$file.$$" && mv "$file.$$" $file
+    fi
+    echo "      - $rootdir:$mnt_poin/$rootdir" >> "$file"
 
     if [ $getfromdeleted -eq 1 ]; then
         tail -n +2 "$fdeleted_uid" > "$fdeleted_uid.$$" && mv "$fdeleted_uid.$$" "$fdeleted_uid"
@@ -144,7 +148,6 @@ delete_user() {
 }
 
 user_management() {
-    file="$DOCKSRC/$user_container_name/docker-compose.yml"
     while :; do
         users="$(grep -oP "USERS=\K.*" $file)"
         if [ -z "$users" ]; then
@@ -172,8 +175,9 @@ user_management() {
     done
 }
 
-# set -x
+set -x
 
+file="$DOCKSRC/$user_container_name/docker-compose.yml"
 if [ -z "$(ls -A $DOCKSRC)" ]; then
     if ! dialog --backtitle "$backtitle" --title "No server found!" --yesno "You don't have server\nDo you want to create?" 0 0; then
         exit 0
@@ -224,7 +228,7 @@ while :; do
                 power "$anon_container_name" "on"
             ;;
             2)
-                if ! grep -qoP "USERS=\K.*" $file ; then
+                if [ -z "$(grep -oP "USERS=\K.*" $file)" ]; then
                     msg "No user found on server. You must add at least one user to turn on server in User-mod"
                     add_user
                 fi
