@@ -37,7 +37,7 @@ dockercompose_form() {
         if ! isavailableIP "$1"; then
             msgstr="$msgstr\nThis IP address is unavailable"
         fi
-        if ! isvalidPort "$2"; then
+        if ! isvalidPort "$2" "21"; then
             msgstr="$msgstr\nThis port is unavailable"
         fi
         [ -n "$msgstr" ] && msg "$msgstr"

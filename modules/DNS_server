@@ -232,7 +232,7 @@ dockercompose_form() {
         if ! isavailableIP "$2"; then
             msgstr="$msgstr\nThis IP address is invalid"
         fi
-        if ! isvalidPort "$3"; then
+        if ! isvalidPort "$3" "53"; then
             msgstr="$msgstr\nThis port is invalid"
         fi
         [ -n "$msgstr" ] && msg "$msgstr"
