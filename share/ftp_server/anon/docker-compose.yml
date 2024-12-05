@@ -2,7 +2,7 @@
 services:
   ftp:
     container_name: tmp_name
-    image: docker-anon-ftp
+    image: metabrainz/docker-anon-ftp
     ports:
       - "tmp_port:21"
     networks:
