@@ -35,14 +35,14 @@ get_zone_act() {
         fi
     else
         zone_name="$(dialog --stdout --backtitle "$backtitle" \
-            --title "Zone Manager" \
-            --ok-label "Select" \
-            --cancel-label "Back" \
-            --no-tags \
-            --extra-button \
-            --extra-label "Create" \
-            --menu "Here is a list of zone file\nPress Create to create a new zone" 0 0 10 \
-            $zones)"
+        --title "Zone Manager" \
+        --ok-label "Select" \
+        --cancel-label "Back" \
+        --no-tags \
+        --extra-button \
+        --extra-label "Create" \
+        --menu "Here is a list of zone file\nPress Create to create a new zone" 0 0 10 \
+        $zones)"
 
         case "$?" in
             0) zone_act="manage" ;;
@@ -332,11 +332,10 @@ server_management() {
     cd "$DOCKSRC/$container_name" || return
     while :; do
         loading
-        inspect_state="$(docker inspect -f '{{.State.Running}}:{{.State.ExitCode}}' "$container_name" 2>/dev/null)"
         status="stopped"
         onoff="on"
         turn_label="Turn $onoff server"
-        if [ "$inspect_state" = "true:0" ]; then
+        if isrunning "$container_name"; then
             status="running"
             onoff="off"
             turn_label="Turn $onoff server"
@@ -361,18 +360,7 @@ server_management() {
 get_server_act() {
     loading
     all_composes="$(ls -1 "$DOCKSRC")"
-    running_cons="$(docker compose ls -q)"
-    server_state=""
-    for server in $all_composes; do
-        if [ "${running_cons#*"$server"}" != "$running_cons" ]; then
-            server_state="${server_state}$server @$server
-"
-        else
-            server_state="${server_state}$server #$server
-"
-        fi
-    done
-    if [ -z "$server_state" ]; then
+    if [ -z "$all_composes" ]; then
         if dialog --backtitle "$backtitle" \
             --title "No Server found" \
             --yes-label "Create" \
@@ -383,6 +371,15 @@ get_server_act() {
             exit 0
         fi
     else
+        running_cons="$(docker compose ls -q)"
+        server_state=""
+        for server in $all_composes; do
+            if [ "${running_cons#*"$server"}" != "$running_cons" ]; then
+                server_state="${server_state}$server @$server "
+            else
+                server_state="${server_state}$server #$server "
+            fi
+        done
         container_name="$(dialog --stdout --backtitle "$backtitle" \
             --title "DNS Manager" \
             --ok-label "Select" \

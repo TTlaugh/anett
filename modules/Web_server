@@ -21,7 +21,6 @@ dockercompose_form() {
         if ! output="$(dialog --stdout --separator " " \
         --backtitle "$backtitle" \
         --title "Create server" \
-        --ok-label "Next" \
         --mixedform "Need these informations to create docker container" 15 60 6 \
         "Name:"     1 1 "$container_name"                                       1 11 30 0  2 \
         ""          2 1 "(*) Subnet: $SUBNET"                                   2 0  0  20 2 \
@@ -160,12 +159,15 @@ change_root_dir() {
     newdir="$(dialog --stdout --backtitle "$backtitle" --title "Change Root Dir" --inputbox "Absolute path is required!\nOld path: $root_dir" 0 0)"
     if [ ! -d "$newdir" ]; then
         mkdir -p "$newdir"
+        sed "s:$root_dir:$newdir:g" < "$DOCKSRC/$container_name/docker-compose.yml" > "/tmp/old_web_root.$$" && mv "/tmp/old_web_root.$$" "$DOCKSRC/$container_name/docker-compose.yml"
+        root_dir="$newdir"
+        msg "You have to copy all your websites from old directory to new directory."
     else
         msg "This path is invalid: file or folder exists.\nAborted!"
     fi
 }
 
-set -x
+# set -x
 
 defconf="$DOCKSRC/$container_name/conf.d/default.conf"
 if [ ! -f "$DOCKSRC/$container_name/docker-compose.yml" ]; then
@@ -178,11 +180,10 @@ pwd=$PWD
 cd "$DOCKSRC/$container_name" || return
 while :; do
     loading
-    inspect_state="$(docker inspect -f '{{.State.Running}}:{{.State.ExitCode}}' "$container_name" 2>/dev/null)"
     status="stopped"
     onoff="on"
     turn_label="Turn $onoff server"
-    if [ "$inspect_state" = "true:0" ]; then
+    if isrunning "$container_name"; then
         status="running"
         onoff="off"
         turn_label="Turn $onoff server"

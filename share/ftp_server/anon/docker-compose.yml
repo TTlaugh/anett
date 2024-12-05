@@ -1,0 +1,19 @@
+#tmp_src
+services:
+  ftp:
+    container_name: tmp_name
+    image: docker-anon-ftp
+    ports:
+      - "tmp_port:21"
+    networks:
+      anett:
+        ipv4_address: tmp_ip
+    restart: unless-stopped
+    environment:
+      - ANON_ROOT=tmp_src
+    volumes:
+      - tmp_src:tmp_src:ro
+
+networks:
+  anett:
+    external: true

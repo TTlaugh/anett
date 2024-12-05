@@ -1,0 +1,242 @@
+#!/bin/bash
+# shellcheck disable=SC2046,SC2086
+
+# shellcheck source=../utils
+. "$UTILS"
+
+module_name="ftp_server"
+DOCKSRC="${DOCKDIR}/$module_name"
+FTPSHARE="${SHARE}/$module_name"
+if [ ! -d "$DOCKSRC" ]; then mkdir -p "$DOCKSRC"; fi
+if [ $SAFEMODE -eq 1 ]; then
+    cp -r "$DOCKSRC" /tmp/"$module_name.$$"
+    trap 'sig_handle $module_name' INT
+fi
+
+backtitle="FTP server - $NAME"
+anon_container_name="anon_ftp_server"
+default_anon_root="$HOME"
+user_container_name="user_ftp_server"
+startUID=10000
+mnt_poin="/ftp/"
+fdeleted_uid="$DOCKSRC/$user_container_name/deleted.uid"
+fcurrent_uid="$DOCKSRC/$user_container_name/current.uid"
+tmp_ifs="$IFS"
+
+dockercompose_form() {
+    while
+        if ! output="$(dialog --stdout --separator " " \
+        --backtitle "$backtitle" \
+        --title "Create server" \
+        --mixedform "Need these informations to create docker container" 10 40 3 \
+        ""          1 1 "(*) Subnet: $SUBNET" 1 0  0  20 2 \
+        "IP addr:"  2 1 ""                    2 11 20 0  0 \
+        "Port:"     3 1 "21"                  3 11 5  0  0 )"; then exit 0; fi
+        set -- $output
+        msgstr=''
+        if ! isavailableIP "$1"; then
+            msgstr="$msgstr\nThis IP address is unavailable"
+        fi
+        if ! isvalidPort "$2"; then
+            msgstr="$msgstr\nThis port is unavailable"
+        fi
+        [ -n "$msgstr" ] && msg "$msgstr"
+    do :; done
+    ip="$2"
+    port="$3"
+}
+
+create_server() {
+    dockercompose_form
+    mkdir -p "$DOCKSRC/$anon_container_name" "$DOCKSRC/$user_container_name"
+    echo $startUID > "$fcurrent_uid"
+    echo $startUID > "$fdeleted_uid"
+    sed "s/tmp_name/$anon_container_name/;s/tmp_ip/$ip/;s/tmp_port/$port/g;s:tmp_src:$default_anon_root:g" < "$FTPSHARE/anon/docker-compose.yml" > "$DOCKSRC/$anon_container_name/docker-compose.yml"
+    sed "s/tmp_name/$user_container_name/;s/tmp_ip/$ip/;s/tmp_port/$port/g" < "$FTPSHARE/user/docker-compose.yml" > "$DOCKSRC/$user_container_name/docker-compose.yml"
+}
+
+delete_server() {
+    echo "### Stopping and removing Containers ... ###"
+    docker compose -f "$DOCKSRC/$anon_container_name/docker-compose.yml" down
+    docker compose -f "$DOCKSRC/$user_container_name/docker-compose.yml" down
+    echo "### Removing all files ... ###"
+    rm -vrf "${DOCKSRC:?}/*"
+    echo "### Done! ###"
+}
+
+power() {
+    loading
+    case "$1" in
+        on)
+            if errors="$(docker compose up -d >/dev/null)"; then
+                sleep 1 & wait && docker compose stop >/dev/null 2>&1
+                if docker ps -an1 --format "{{.Status}}" | grep -q "(0)"; then
+                    docker compose up -d >/dev/null 2>&1
+                else
+                    docker compose down >/dev/null 2>&1
+                    msg "Server startup failed, an error occurred! Please check your server configuration."
+                fi
+            else
+                msg "Detail: $errors" "Server startup failed!"
+            fi
+        ;;
+        off)
+            docker compose down >/dev/null 2>&1
+        ;;
+    esac
+}
+
+change_anon_root() {
+    newdir="$(dialog --stdout --backtitle "$backtitle" --title "Change Root Dir" --inputbox "Absolute path is required!\nOld path: $anon_root" 0 0)"
+    if [ ! -d "$newdir" ]; then
+        msg "File or directory does not exist."
+        return 1
+    fi
+    sed "s:$anon_root:$newdir:g" < "$DOCKSRC/$anon_container_name/docker-compose.yml" > "/tmp/old_anon_root.$$" && mv "/tmp/old_anon_root.$$" "$DOCKSRC/$anon_container_name/docker-compose.yml"
+    anon_root="$newdir"
+}
+
+add_user() {
+    uid="$(head -n1 $fdeleted_uid)"
+    if [ -n "$uid" ]; then
+        getfromdeleted=1
+    else
+        getfromdeleted=0
+        uid="$(cat $fcurrent_uid)"
+        uid="$((uid+1))"
+    fi
+    output="$(dialog --stdout --separator " " \
+    --backtitle "$backtitle" \
+    --title "Add User" \
+    --mixedform "Root directory must be absolute" 0 0 2 \
+        "uid(UserID) username:        password:        root directory:" 1 1 "" 1 37 0 0 2 \
+        "uid($uid)" 1 1 "" 1 13 16 0 0 \
+        ""          1 1 "" 1 30 16 0 0 \
+        ""          1 1 "" 1 47 25 0 0 )"
+    set -- $output
+    username=" $1"
+    password="$2"
+    rootdir="$3"
+    if [ "${users#*"$username"}" != "$users" ]; then
+        msg "This username already exists"
+        return
+    fi
+    str="$username|$password|$rootdir|$uid"
+    sed "s:$users:$users$str:" < $file > "$file.$$" && mv "$file.$$" $file
+
+    if [ $getfromdeleted -eq 1 ]; then
+        tail -n +2 "$fdeleted_uid" > "$fdeleted_uid.$$" && mv "$fdeleted_uid.$$" "$fdeleted_uid"
+    else
+        echo "$uid" > "$fcurrent_uid"
+    fi
+}
+
+delete_user() {
+    # delete user in env var USERS
+    sed "s: $chosen_user::" < $file > "$file.$$" && mv "$file.$$" $file
+    IFS='|'
+    set -- $chosen_user
+    # delete mount volume of this user
+    ln="$(awk -v x="$3:" '$0~x {print NR}' docker-compose.yml | tail -n1)"
+    sed "${ln}d" < $file > "$file.$$" && mv "$file.$$" $file
+    # write uid of deleted user to deleted.uid file
+    echo "$4" >> "$fdeleted_uid"
+    IFS="$tmp_ifs"
+}
+
+user_management() {
+    file="$DOCKSRC/$user_container_name/docker-compose.yml"
+    while :; do
+        users="$(grep -oP "USERS=\K.*" $file)"
+        if [ -z "$users" ]; then
+            msg "No user found. You must add at least one user"
+            add_user && continue
+        fi
+        user_list=()
+        for user in $users; do
+            username="${user%%|*}"
+            user_list+=( "$user" "$username" )
+        done
+        chosen_user="$(dialog --stdout --backtitle "$backtitle" \
+        --title "Users" \
+        --no-tags \
+        --cancel-label "Delete" \
+        --extra-button \
+        --extra-label "Add" \
+        --menu "Here is a list of users" 0 0 7 \
+        "${user_list[@]}")"
+        case $? in
+            1) delete_user ;;
+            3) add_user ;;
+            *) break ;;
+        esac
+    done
+}
+
+# set -x
+
+if [ -z "$(ls -A $DOCKSRC)" ]; then
+    if ! dialog --backtitle "$backtitle" --title "No server found!" --yesno "You don't have server\nDo you want to create?" 0 0; then
+        exit 0
+    fi
+    create_server
+fi
+pwd=$PWD
+# TODO: this code is so long!!!
+while :; do
+    loading
+    if isrunning "$anon_container_name"; then
+        status="running in anonymous mode"
+        anon_root="$(head -n1 "$DOCKSRC/$anon_container_name/docker-compose.yml" | sed 's/#//')"
+        cd "$DOCKSRC/$anon_container_name" || break
+        case "$(dialog --stdout --backtitle "$backtitle" --title "Server Management" --no-tags --menu "Status: $status\nRoot Directory: $anon_root" 0 0 3 \
+                1 "turn off server" 2 "Change Root Dir" 3 "Delete Server")"
+        in
+            1) power "off" ;;
+            2) change_anon_root ;;
+            3)
+                if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
+                    delete_server | dialog --title "Deleting Server" --programbox -1 -1 && break
+                fi
+            ;;
+        esac
+    elif isrunning "$user_container_name"; then
+        status="running in user mode"
+        cd "$DOCKSRC/$user_container_name" || break
+        case "$(dialog --stdout --backtitle "$backtitle" --title "Server Management" --no-tags --menu "Status: $status" 0 0 3 \
+                1 "Turn off server" 2 "User Management" 3 "Delete Server")"
+        in
+            1) power "off" ;;
+            2) user_management ;;
+            3)
+                if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
+                    delete_server | dialog --title "Deleting Server" --programbox -1 -1 && break
+                fi
+            ;;
+        esac
+    else
+        status="stopped"
+        case "$(dialog --stdout --backtitle "$backtitle" --title "Server Management" --no-tags --menu "Status: $status" 0 0 3 \
+                1 "Turn on - anonymous" 2 "Turn on - user" 3 "Delete Server")"
+        in
+            1) cd "$DOCKSRC/$anon_container_name" || break
+                power "on"
+            ;;
+            2)
+                if ! grep -qoP "USERS=\K.*" $file ; then
+                    msg "No user found on server. You must add at least one user to turn on server in User-mod"
+                    add_user
+                fi
+                cd "$DOCKSRC/$user_container_name" || break
+                power "on"
+            ;;
+            3)
+                if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
+                    delete_server | dialog --title "Deleting Server" --programbox -1 -1 && break
+                fi
+            ;;
+        esac
+    fi
+done
+cd "$pwd" || exit 1
+if [ -d /tmp/"$module_name.$$" ]; then rm -rf /tmp/"$module_name.$$"; fi

@@ -1,0 +1,16 @@
+networks:
+  anett:
+    external: true
+services:
+  ftp:
+    container_name: tmp_name
+    image: delfer/alpine-ftp-server
+    ports:
+      - "tmp_port:21"
+    networks:
+      anett:
+        ipv4_address: tmp_ip
+    restart: unless-stopped
+    environment:
+      - USERS=name|password|/root/dir|10001 name|password|/root/dir|10001
+    volumes:
