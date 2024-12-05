@@ -120,8 +120,9 @@ delete_website() {
         grep -vw "$webname" "$defconf" > "$defconf.$$"
         mv "$defconf.$$" "$defconf"
     fi
+    echo "### Rename '$webname' source folder to '${webname}_deleted' ... ###"
+    mv "$root_dir/$webname" "$root_dir/${webname}_deleted"
     echo "### Done! ###"
-    echo "The '$webname' sources are still RETAINED, you need to REMOVE them manually."
 }
 
 website_management() {
@@ -146,7 +147,7 @@ website_management() {
             0) add_website ;;
             3)
                 if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
-                    msg "The '$webname' sources are still RETAINED, you need to REMOVE them manually."
+                    msg "The '$webname' resources have been renamed to '${webname}_deleted', you need to DELETE them manually."
                     delete_website | dialog --title "Deleting Server" --programbox -1 -1 && return
                 fi
             ;;
