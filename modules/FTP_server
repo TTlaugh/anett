@@ -65,14 +65,13 @@ delete_server() {
 }
 
 power() {
+    set -x
     loading
-    case "$1" in
+    case "$2" in
         on)
             if errors="$(docker compose up -d >/dev/null)"; then
-                sleep 1 & wait && docker compose stop >/dev/null 2>&1
-                if docker ps -an1 --format "{{.Status}}" | grep -q "(0)"; then
-                    docker compose up -d >/dev/null 2>&1
-                else
+                sleep 1
+                if ! isrunning "$1"; then
                     docker compose down >/dev/null 2>&1
                     msg "Server startup failed, an error occurred! Please check your server configuration."
                 fi
@@ -192,13 +191,14 @@ while :; do
         case "$(dialog --stdout --backtitle "$backtitle" --title "Server Management" --no-tags --menu "Status: $status\nRoot Directory: $anon_root" 0 0 3 \
                 1 "turn off server" 2 "Change Root Dir" 3 "Delete Server")"
         in
-            1) power "off" ;;
+            1) power "$anon_container_name" "off" ;;
             2) change_anon_root ;;
             3)
                 if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
                     delete_server | dialog --title "Deleting Server" --programbox -1 -1 && break
                 fi
             ;;
+            *) break ;;
         esac
     elif isrunning "$user_container_name"; then
         status="running in user mode"
@@ -206,13 +206,14 @@ while :; do
         case "$(dialog --stdout --backtitle "$backtitle" --title "Server Management" --no-tags --menu "Status: $status" 0 0 3 \
                 1 "Turn off server" 2 "User Management" 3 "Delete Server")"
         in
-            1) power "off" ;;
+            1) power "$user_container_name" "off" ;;
             2) user_management ;;
             3)
                 if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
                     delete_server | dialog --title "Deleting Server" --programbox -1 -1 && break
                 fi
             ;;
+            *) break ;;
         esac
     else
         status="stopped"
@@ -220,7 +221,7 @@ while :; do
                 1 "Turn on - anonymous" 2 "Turn on - user" 3 "Delete Server")"
         in
             1) cd "$DOCKSRC/$anon_container_name" || break
-                power "on"
+                power "$anon_container_name" "on"
             ;;
             2)
                 if ! grep -qoP "USERS=\K.*" $file ; then
@@ -228,13 +229,14 @@ while :; do
                     add_user
                 fi
                 cd "$DOCKSRC/$user_container_name" || break
-                power "on"
+                power "$user_container_name" "on"
             ;;
             3)
                 if dialog --backtitle "$backtitle" --title "Confirm DELETE!" --yesno "Do you want to delete the server?" 0 0; then
                     delete_server | dialog --title "Deleting Server" --programbox -1 -1 && break
                 fi
             ;;
+            *) break ;;
         esac
     fi
 done

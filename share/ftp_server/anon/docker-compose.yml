@@ -10,10 +10,8 @@ services:
       anett:
         ipv4_address: tmp_ip
     restart: unless-stopped
-    environment:
-      - ANON_ROOT=tmp_src
     volumes:
-      - tmp_src:tmp_src:ro
+      - tmp_src:/var/ftp:ro
 
 networks:
   anett:
