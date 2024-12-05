@@ -129,7 +129,7 @@ website_management() {
         server_names="$(grep -oP "server_name\s+\K.*?(?=;)" "$defconf")"
         if [ -z "$server_names" ]; then
             if dialog --backtitle "$backtitle" --title "No Website found" --yesno "You don't have any website\nDo you want to create one?" 0 0; then
-                add_website
+                add_website && continue
             fi
         fi
         websites=""
